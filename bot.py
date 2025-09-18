@@ -1,75 +1,84 @@
-# bot.py
 import os
-import logging
+import json
+import time
 import requests
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 
-# -------------------------
-# الإعدادات الأساسية
-# -------------------------
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")  # توكن البوت من Environment
-API_KEY = os.environ.get("MAILS_API_KEY")         # توكن API من Environment
+# قراءة المتغيرات من Environment
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+MAILS_API_KEY = os.getenv("MAILS_API_KEY")
+APP_URL = os.getenv("APP_URL")  # إذا ستستخدم Webhook
 
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO
-)
-logger = logging.getLogger(__name__)
-
-# -------------------------
-# دالة التحقق من الإيميل
-# -------------------------
-def check_email(email: str) -> str:
-    url = f'https://api.mails.so/v1/validate?email={email}'
-    headers = {'x-mails-api-key': API_KEY}
-    try:
-        response = requests.get(url, headers=headers, timeout=10)
-        data = response.json()
-        # نرجع الحالة مع الإيميل
-        status = data.get("status", "Unknown")
-        return f"{email}: {status}"
-    except Exception as e:
-        return f"{email}: Error ({e})"
-
-# -------------------------
-# دالة بدء البوت
-# -------------------------
+# إرسال رسالة ترحيب
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "مرحباً! أرسل لي إيميل أو مجموعة إيميلات مفصولة بفواصل أو أسطر للتحقق منها."
-    )
+    await update.message.reply_text("أرسل لي إيميل واحد أو مجموعة إيميلات مفصولة بمسافة للتحقق منها.")
 
-# -------------------------
-# دالة استقبال الرسائل
-# -------------------------
+# التحقق من الإيميلات عبر Bulk API
+def validate_emails_bulk(emails: list):
+    url = "https://api.mails.so/v1/batch"
+    headers = {
+        "x-mails-api-key": MAILS_API_KEY,
+        "Content-Type": "application/json"
+    }
+    payload = {"emails": emails}
+    response = requests.post(url, headers=headers, data=json.dumps(payload))
+    if response.status_code != 200:
+        return {"error": f"API error {response.status_code}"}
+    data = response.json()
+    job_id = data.get("data", {}).get("id")
+    return {"job_id": job_id}
+
+# استعلام نتائج الـ Job بعد 5 ثواني (يمكن تعديلها)
+def get_bulk_results(job_id):
+    url = f"https://api.mails.so/v1/batch/{job_id}"
+    headers = {
+        "x-mails-api-key": MAILS_API_KEY
+    }
+    # ننتظر قليلًا لتكون النتائج جاهزة
+    time.sleep(5)
+    response = requests.get(url, headers=headers)
+    if response.status_code != 200:
+        return {"error": f"API error {response.status_code}"}
+    data = response.json()
+    results = {}
+    for item in data.get("data", {}).get("results", []):
+        email = item.get("email")
+        result = item.get("result")
+        results[email] = result
+    return results
+
+# معالجة الرسائل من المستخدم
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
-    if not text:
-        await update.message.reply_text("أرسل إيميل صالح للتحقق.")
-        return
-
-    # نفصل الإيميلات حسب الفاصلة أو السطر الجديد
-    emails = [e.strip() for e in text.replace("\n", ",").split(",") if e.strip()]
+    emails = text.split()  # نفصل الإيميلات بمسافة
     if not emails:
-        await update.message.reply_text("لم أجد إيميلات صالحة للتحقق.")
+        await update.message.reply_text("لم أجد أي إيميل. أرسل إيميلات مفصولة بمسافة.")
         return
 
-    # تحقق من كل إيميل
-    results = [check_email(email) for email in emails]
-    reply = "📋 نتائج التحقق:\n" + "\n".join(results)
-    await update.message.reply_text(reply)
+    await update.message.reply_text("جاري التحقق من الإيميلات... ⏳")
+    bulk_response = validate_emails_bulk(emails)
+    if "error" in bulk_response:
+        await update.message.reply_text(f"حدث خطأ أثناء التحقق: {bulk_response['error']}")
+        return
 
-# -------------------------
-# دالة رئيسية لتشغيل البوت
-# -------------------------
-def main():
-    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+    job_id = bulk_response.get("job_id")
+    results = get_bulk_results(job_id)
+    if "error" in results:
+        await update.message.reply_text(f"حدث خطأ أثناء جلب النتائج: {results['error']}")
+        return
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    reply_text = "📋 نتائج التحقق:\n"
+    for email, status in results.items():
+        reply_text += f"{email}: {status}\n"
 
-    # شغل البوت
-    app.run_polling()
+    await update.message.reply_text(reply_text)
 
+# إعداد التطبيق
+app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+app.add_handler(CommandHandler("start", start))
+app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
+
+# تشغيل البوت
 if __name__ == "__main__":
-    main()
+    app.run_polling()
