@@ -1,61 +1,75 @@
-import re
-import asyncio
+# bot.py
+import os
+import logging
+import requests
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 
-# ضع هنا توكن البوت بتاعك
-TELEGRAM_TOKEN = "YOUR_BOT_TOKEN_HERE"
+# -------------------------
+# الإعدادات الأساسية
+# -------------------------
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")  # توكن البوت من Environment
+API_KEY = os.environ.get("MAILS_API_KEY")         # توكن API من Environment
 
-# دالة للتحقق من صحة الايميل بصيغة بسيطة
-def is_valid_email(email: str) -> bool:
-    pattern = r"^[\w\.-]+@[\w\.-]+\.\w+$"
-    return re.match(pattern, email) is not None
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO
+)
+logger = logging.getLogger(__name__)
 
-# دالة التحقق من الايميلات (يمكن توسعتها للتحقق الفعلي عبر SMTP أو API خارجي)
-async def check_email(email: str) -> str:
-    if is_valid_email(email):
-        # هنا فقط تحقق صيغة الايميل
-        return f"{email} ✅"
-    else:
-        return f"{email} ❌"
+# -------------------------
+# دالة التحقق من الإيميل
+# -------------------------
+def check_email(email: str) -> str:
+    url = f'https://api.mails.so/v1/validate?email={email}'
+    headers = {'x-mails-api-key': API_KEY}
+    try:
+        response = requests.get(url, headers=headers, timeout=10)
+        data = response.json()
+        # نرجع الحالة مع الإيميل
+        status = data.get("status", "Unknown")
+        return f"{email}: {status}"
+    except Exception as e:
+        return f"{email}: Error ({e})"
 
-# دالة لمعالجة الرسائل الواردة
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.strip()
-    emails = re.split(r"[,\s]+", text)  # فصل الايميلات حسب مسافة أو فاصلة
-    results = []
-
-    for email in emails:
-        result = await check_email(email)
-        results.append(result)
-
-    reply = "📋 Email Validation Results:\n" + "\n".join(results)
-    await update.message.reply_text(reply)
-
-# دالة Start
+# -------------------------
+# دالة بدء البوت
+# -------------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "مرحباً! أرسل لي ايميل واحد أو مجموعة ايميلات للتحقق منها."
+        "مرحباً! أرسل لي إيميل أو مجموعة إيميلات مفصولة بفواصل أو أسطر للتحقق منها."
     )
 
-# دالة main لتشغيل البوت
+# -------------------------
+# دالة استقبال الرسائل
+# -------------------------
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip()
+    if not text:
+        await update.message.reply_text("أرسل إيميل صالح للتحقق.")
+        return
+
+    # نفصل الإيميلات حسب الفاصلة أو السطر الجديد
+    emails = [e.strip() for e in text.replace("\n", ",").split(",") if e.strip()]
+    if not emails:
+        await update.message.reply_text("لم أجد إيميلات صالحة للتحقق.")
+        return
+
+    # تحقق من كل إيميل
+    results = [check_email(email) for email in emails]
+    reply = "📋 نتائج التحقق:\n" + "\n".join(results)
+    await update.message.reply_text(reply)
+
+# -------------------------
+# دالة رئيسية لتشغيل البوت
+# -------------------------
 def main():
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    # Webhook settings
-    port = 8443
-    url_path = TELEGRAM_TOKEN
-    webhook_url = f"https://YOUR_DOMAIN_HERE/{TELEGRAM_TOKEN}"
-
-    app.run_webhook(
-        listen="0.0.0.0",
-        port=port,
-        url_path=url_path,
-        webhook_url=webhook_url
-    )
+    # شغل البوت
+    app.run_polling()
 
 if __name__ == "__main__":
     main()
