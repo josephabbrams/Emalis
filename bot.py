@@ -1,84 +1,74 @@
 import os
-import json
-import time
+import logging
 import requests
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 
-# قراءة المتغيرات من Environment
+# إعدادات Logging
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 MAILS_API_KEY = os.getenv("MAILS_API_KEY")
-APP_URL = os.getenv("APP_URL")  # إذا ستستخدم Webhook
+ALLOWED_USER_ID = int(os.getenv("ALLOWED_USER_ID"))  # ID المستخدم المسموح
 
-# إرسال رسالة ترحيب
+WEBHOOK_URL = os.getenv("APP_URL") + "/mails-webhook"
+
+# ---------------------------
+# أوامر البوت
+# ---------------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("أرسل لي إيميل واحد أو مجموعة إيميلات مفصولة بمسافة للتحقق منها.")
+    if update.effective_user.id != ALLOWED_USER_ID:
+        return
+    await update.message.reply_text("مرحباً! أرسل لي إيميل واحد أو مجموعة إيميلات مفصولة بفاصلة للتحقق.")
 
-# التحقق من الإيميلات عبر Bulk API
-def validate_emails_bulk(emails: list):
-    url = "https://api.mails.so/v1/batch"
+# ---------------------------
+# استقبال الرسائل (إيميلات)
+# ---------------------------
+async def handle_emails(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ALLOWED_USER_ID:
+        return
+
+    text = update.message.text.strip()
+    emails = [e.strip() for e in text.split(",") if e.strip()]
+
+    if len(emails) == 0:
+        await update.message.reply_text("لم أتعرف على أي إيميل. أرسل إيميل واحد أو أكثر مفصولة بفاصلة.")
+        return
+
+    await update.message.reply_text("تم استلام الإيميلات، جاري التحقق... ستصلك النتائج عند الانتهاء.")
+
+    # إرسال Bulk request إلى Mails.so مع Webhook
+    payload = {
+        "emails": emails,
+        "webhook": WEBHOOK_URL
+    }
     headers = {
         "x-mails-api-key": MAILS_API_KEY,
         "Content-Type": "application/json"
     }
-    payload = {"emails": emails}
-    response = requests.post(url, headers=headers, data=json.dumps(payload))
-    if response.status_code != 200:
-        return {"error": f"API error {response.status_code}"}
-    data = response.json()
-    job_id = data.get("data", {}).get("id")
-    return {"job_id": job_id}
 
-# استعلام نتائج الـ Job بعد 5 ثواني (يمكن تعديلها)
-def get_bulk_results(job_id):
-    url = f"https://api.mails.so/v1/batch/{job_id}"
-    headers = {
-        "x-mails-api-key": MAILS_API_KEY
-    }
-    # ننتظر قليلًا لتكون النتائج جاهزة
-    time.sleep(5)
-    response = requests.get(url, headers=headers)
-    if response.status_code != 200:
-        return {"error": f"API error {response.status_code}"}
-    data = response.json()
-    results = {}
-    for item in data.get("data", {}).get("results", []):
-        email = item.get("email")
-        result = item.get("result")
-        results[email] = result
-    return results
+    try:
+        response = requests.post("https://api.mails.so/v1/batch", json=payload, headers=headers)
+        data = response.json()
+        logging.info(f"Bulk request sent: {data}")
+    except Exception as e:
+        logging.error(f"Error sending bulk request: {e}")
+        await update.message.reply_text("حدث خطأ أثناء إرسال الطلب. حاول لاحقاً.")
 
-# معالجة الرسائل من المستخدم
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.strip()
-    emails = text.split()  # نفصل الإيميلات بمسافة
-    if not emails:
-        await update.message.reply_text("لم أجد أي إيميل. أرسل إيميلات مفصولة بمسافة.")
-        return
-
-    await update.message.reply_text("جاري التحقق من الإيميلات... ⏳")
-    bulk_response = validate_emails_bulk(emails)
-    if "error" in bulk_response:
-        await update.message.reply_text(f"حدث خطأ أثناء التحقق: {bulk_response['error']}")
-        return
-
-    job_id = bulk_response.get("job_id")
-    results = get_bulk_results(job_id)
-    if "error" in results:
-        await update.message.reply_text(f"حدث خطأ أثناء جلب النتائج: {results['error']}")
-        return
-
-    reply_text = "📋 نتائج التحقق:\n"
-    for email, status in results.items():
-        reply_text += f"{email}: {status}\n"
-
-    await update.message.reply_text(reply_text)
-
-# إعداد التطبيق
-app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-app.add_handler(CommandHandler("start", start))
-app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
-
+# ---------------------------
 # تشغيل البوت
+# ---------------------------
+def main():
+    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_emails))
+
+    port = int(os.environ.get("PORT", 5000))
+    app.run_webhook(listen="0.0.0.0", port=port, webhook_url=WEBHOOK_URL)
+
 if __name__ == "__main__":
-    app.run_polling()
+    main()
