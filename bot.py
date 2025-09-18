@@ -1,77 +1,61 @@
-# bot.py
-import os
+import re
+import asyncio
 from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
-from dotenv import load_dotenv
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 
-# Load environment variables
-load_dotenv()
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-MAILS_API_KEY = os.getenv("MAILS_API_KEY")  # إذا كنت محتاج تستخدمه في المستقبل
+# ضع هنا توكن البوت بتاعك
+TELEGRAM_TOKEN = "YOUR_BOT_TOKEN_HERE"
 
-# --- Handlers ---
+# دالة للتحقق من صحة الايميل بصيغة بسيطة
+def is_valid_email(email: str) -> bool:
+    pattern = r"^[\w\.-]+@[\w\.-]+\.\w+$"
+    return re.match(pattern, email) is not None
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Send a welcome message when the command /start is issued."""
-    await update.message.reply_text(
-        "Hello! Welcome to the bot. Please enter your User ID to get started."
-    )
-
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Send a help message when the command /help is issued."""
-    await update.message.reply_text(
-        "Available commands:\n/start - Welcome message\n/help - This help message"
-    )
-
-async def echo_user_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Ask the user to enter their ID."""
-    user_input = update.message.text
-    if user_input.isdigit():
-        await update.message.reply_text(f"Thanks! Your User ID is: {user_input}")
+# دالة التحقق من الايميلات (يمكن توسعتها للتحقق الفعلي عبر SMTP أو API خارجي)
+async def check_email(email: str) -> str:
+    if is_valid_email(email):
+        # هنا فقط تحقق صيغة الايميل
+        return f"{email} ✅"
     else:
-        await update.message.reply_text("Please enter a valid numeric User ID.")
+        return f"{email} ❌"
 
-# --- Main function ---
+# دالة لمعالجة الرسائل الواردة
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip()
+    emails = re.split(r"[,\s]+", text)  # فصل الايميلات حسب مسافة أو فاصلة
+    results = []
 
+    for email in emails:
+        result = await check_email(email)
+        results.append(result)
+
+    reply = "📋 Email Validation Results:\n" + "\n".join(results)
+    await update.message.reply_text(reply)
+
+# دالة Start
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "مرحباً! أرسل لي ايميل واحد أو مجموعة ايميلات للتحقق منها."
+    )
+
+# دالة main لتشغيل البوت
 def main():
-    """Start the bot."""
-    app = Application.builder().token(TELEGRAM_TOKEN).build()
-
-    # Add handlers
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo_user_id))
-
-    # Run the bot with polling (works on Render Free)
-    app.run_polling()
-
-if __name__ == "__main__":
-    main()            reply = "📋 Bulk Validation Results:\n" + "\n".join(results)
-            await update.message.reply_text(reply or "⚠️ No results returned.")
-            save_usage(used + len(emails))
-        except Exception as e:
-            await update.message.reply_text(f"⚠️ Error validating emails.\n{e}")
-
-# Main
-def main():
-    if not TELEGRAM_TOKEN or not MAILS_API_KEY or not ALLOWED_USER_ID or not APP_URL:
-        print("⚠️ Please set TELEGRAM_TOKEN, MAILS_API_KEY, ALLOWED_USER_ID, and APP_URL in .env")
-        return
-
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("credits", credits))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    # Webhook setup
-    port = int(os.environ.get("PORT", 5000))
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
+
+    # Webhook settings
+    port = 8443
+    url_path = TELEGRAM_TOKEN
+    webhook_url = f"https://YOUR_DOMAIN_HERE/{TELEGRAM_TOKEN}"
+
     app.run_webhook(
         listen="0.0.0.0",
         port=port,
-        url_path=TELEGRAM_TOKEN
+        url_path=url_path,
+        webhook_url=webhook_url
     )
-    app.bot.set_webhook(f"{APP_URL}/{TELEGRAM_TOKEN}")
-    print("🤖 Bot is running via Webhook...")
 
 if __name__ == "__main__":
     main()
